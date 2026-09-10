@@ -15,7 +15,7 @@ This guide covers methods for adding your own models, custom nodes, and static i
 There are two primary methods for **manual** customization:
 
 1.  **Custom Dockerfile (recommended for manual setup):** Create your own `Dockerfile` starting `FROM` one of the official `worker-comfyui` base images. This allows you to bake specific custom nodes, models, and input files directly into your image using `comfy-cli` commands. **This method does not require forking the `worker-comfyui` repository.**
-2.  **Network Volume:** Store models on a persistent network volume attached to your RunPod endpoint. This is useful if you frequently change models or have very large models you don't want to include in the image build process.
+2.  **Network Volume:** Store models (and optionally custom node packs) on a persistent network volume attached to your RunPod endpoint. This is useful if you frequently change models/nodes or have very large assets you don't want to bake into the image.
 
 ## Method 1: Custom Dockerfile
 
@@ -109,4 +109,5 @@ Using a Network Volume is primarily useful if you want to manage **models** sepa
 > [!NOTE]
 >
 > - When a Network Volume is correctly attached, ComfyUI running inside the worker container will automatically detect and load models from the standard directories (`/runpod-volume/models/...`) within that volume (for serverless workers). For directory mapping details and troubleshooting, see [Network Volumes & Model Paths](network-volumes.md).
-> - This method is **not suitable for installing custom nodes**; use the Custom Dockerfile method for that.
+> - **Custom nodes from the volume:** place packs at `/runpod-volume/custom_nodes/<PackName>/`. At boot, `start.sh` registers that path and runs `uv pip install -r requirements.txt` into `/opt/venv`. Packs that are already baked into the image (same folder name under `/comfyui/custom_nodes`) are skipped to avoid duplicate imports. Prefer baking nodes with heavy/pinned native deps into the Dockerfile; use the volume for packs you iterate on often.
+> - Disable with `NETWORK_VOLUME_CUSTOM_NODES=false`, or skip only dependency installs with `SKIP_VOLUME_NODE_DEPS=true`.

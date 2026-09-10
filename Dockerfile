@@ -109,8 +109,11 @@ ADD src/extra_model_paths.yaml ./
 # Go back to the root
 WORKDIR /
 
-# Install Python runtime dependencies for the handler
-RUN uv pip install runpod requests websocket-client
+# Install Python runtime dependencies for the handler.
+# torchcodec is required by torchaudio's load_with_torchcodec path
+# (e.g. LoadAudioFromURL / audio nodes); ffmpeg is already apt-installed above.
+# Pin to the ABI-stable line compatible with torch 2.11+.
+RUN uv pip install runpod requests websocket-client "torchcodec>=0.12"
 
 # Add application code and scripts
 ADD src/start.sh src/network_volume.py handler.py test_input.json ./

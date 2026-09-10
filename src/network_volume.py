@@ -19,6 +19,8 @@ MODEL_TYPES = {
     "upscale_models": [".safetensors", ".pt", ".pth"],
     "vae": [".safetensors", ".pt", ".bin"],
     "unet": [".safetensors", ".pt", ".bin"],
+    "diffusion_models": [".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf"],
+    "text_encoders": [".safetensors", ".pt", ".bin"],
 }
 
 
@@ -52,6 +54,16 @@ def run_network_volume_diagnostics():
             "    This file is required for ComfyUI to find models on the network volume."
         )
 
+    overlay = "/tmp/extra_custom_nodes_paths.yaml"
+    print("\n[1b] Checking volume custom-nodes overlay...")
+    if os.path.isfile(overlay):
+        print(f"    ✓ FOUND: {overlay}")
+        with open(overlay, "r") as f:
+            for line in f.read().split("\n"):
+                print(f"      {line}")
+    else:
+        print(f"    (none) {overlay} not present — volume custom nodes not registered")
+
     # Check network volume mount
     runpod_volume = "/runpod-volume"
     print(f"\n[2] Checking network volume mount at {runpod_volume}...")
@@ -75,48 +87,86 @@ def run_network_volume_diagnostics():
         print("\n    ⚠️  PROBLEM: The 'models' directory does not exist!")
         print("    You need to create the following structure on your network volume:")
         print_expected_structure()
-        print("=" * 70)
-        return
+        # Continue — custom_nodes may still exist without models/
 
     # List model directories and their contents
     print("\n[4] Scanning model directories...")
     found_any_models = False
 
-    for model_type, extensions in MODEL_TYPES.items():
-        model_path = os.path.join(models_dir, model_type)
-        if os.path.isdir(model_path):
-            files = []
-            try:
-                for f in os.listdir(model_path):
-                    file_path = os.path.join(model_path, f)
-                    if os.path.isfile(file_path):
-                        # Check if file has valid extension
-                        ext = os.path.splitext(f)[1].lower()
-                        if ext in extensions:
-                            size = os.path.getsize(file_path)
-                            size_str = format_size(size)
-                            files.append(f"{f} ({size_str})")
-                            found_any_models = True
-                        else:
-                            files.append(f"{f} (⚠️ ignored - invalid extension)")
-            except Exception as e:
-                print(f"    {model_type}/: Error reading directory - {e}")
-                continue
+    if os.path.isdir(models_dir):
+        for model_type, extensions in MODEL_TYPES.items():
+            model_path = os.path.join(models_dir, model_type)
+            if os.path.isdir(model_path):
+                files = []
+                try:
+                    for f in os.listdir(model_path):
+                        file_path = os.path.join(model_path, f)
+                        if os.path.isfile(file_path):
+                            # Check if file has valid extension
+                            ext = os.path.splitext(f)[1].lower()
+                            if ext in extensions:
+                                size = os.path.getsize(file_path)
+                                size_str = format_size(size)
+                                files.append(f"{f} ({size_str})")
+                                found_any_models = True
+                            else:
+                                files.append(f"{f} (⚠️ ignored - invalid extension)")
+                except Exception as e:
+                    print(f"    {model_type}/: Error reading directory - {e}")
+                    continue
 
-            if files:
-                print(f"\n    {model_type}/:")
-                for f in files:
-                    print(f"      - {f}")
+                if files:
+                    print(f"\n    {model_type}/:")
+                    for f in files:
+                        print(f"      - {f}")
+                else:
+                    print(f"\n    {model_type}/: (empty)")
             else:
-                print(f"\n    {model_type}/: (empty)")
-        else:
-            print(f"\n    {model_type}/: (directory not found)")
+                print(f"\n    {model_type}/: (directory not found)")
+    else:
+        print("    (skipped — models/ missing)")
+
+    # Custom nodes on volume
+    print("\n[4b] Scanning custom_nodes on volume...")
+    custom_nodes_dir = os.path.join(runpod_volume, "custom_nodes")
+    staged_dir = "/tmp/runpod_volume_custom_nodes"
+    found_nodes = False
+    if os.path.isdir(custom_nodes_dir):
+        print(f"    ✓ FOUND: {custom_nodes_dir}")
+        try:
+            entries = sorted(os.listdir(custom_nodes_dir))
+        except Exception as e:
+            entries = []
+            print(f"    Error reading directory - {e}")
+        for name in entries:
+            path = os.path.join(custom_nodes_dir, name)
+            if not os.path.isdir(path) or name.startswith("."):
+                continue
+            found_nodes = True
+            baked = os.path.isdir(os.path.join("/comfyui/custom_nodes", name))
+            has_req = os.path.isfile(os.path.join(path, "requirements.txt"))
+            staged = os.path.isdir(os.path.join(staged_dir, name)) or os.path.islink(
+                os.path.join(staged_dir, name)
+            )
+            flags = []
+            if baked:
+                flags.append("baked-in-image→skipped")
+            if has_req:
+                flags.append("has requirements.txt")
+            if staged:
+                flags.append("staged for load")
+            flag_str = f" ({', '.join(flags)})" if flags else ""
+            print(f"      - {name}/{flag_str}")
+        if not found_nodes:
+            print("    (directory empty — no node packages)")
+    else:
+        print(f"    ✗ NOT FOUND: {custom_nodes_dir}")
+        print("    Place node packs at /runpod-volume/custom_nodes/<NodePack>/")
 
     # Summary
     print("\n[5] Summary")
     if found_any_models:
         print("    ✓ Models found on network volume!")
-        print("    ComfyUI should be able to load these models.")
     else:
         print("    ⚠️  No valid model files found on network volume!")
         print("\n    Make sure your models have the correct file extensions:")
@@ -124,6 +174,11 @@ def run_network_volume_diagnostics():
         print("    - LoRAs: .safetensors, .pt")
         print("    - VAE: .safetensors, .pt, .bin")
         print("    - etc.")
+
+    if found_nodes:
+        print("    ✓ Custom node packages found on network volume!")
+    else:
+        print("    ⚠️  No custom node packages found under custom_nodes/")
 
     print_expected_structure()
     print("=" * 70)
@@ -133,14 +188,18 @@ def print_expected_structure():
     """Print the expected directory structure for the network volume."""
     print("\n    Expected directory structure:")
     print("    /runpod-volume/")
-    print("    └── models/")
-    print("        ├── checkpoints/    <- Put your .safetensors/.ckpt models here")
-    print("        ├── loras/          <- Put your LoRA files here")
-    print("        ├── vae/            <- Put your VAE files here")
-    print("        ├── clip/           <- Put your CLIP models here")
-    print("        ├── controlnet/     <- Put your ControlNet models here")
-    print("        ├── embeddings/     <- Put your embedding files here")
-    print("        └── upscale_models/ <- Put your upscale models here")
+    print("    ├── models/")
+    print("    │   ├── checkpoints/")
+    print("    │   ├── diffusion_models/")
+    print("    │   ├── text_encoders/")
+    print("    │   ├── loras/")
+    print("    │   ├── vae/")
+    print("    │   └── ...")
+    print("    └── custom_nodes/")
+    print("        ├── SomeNodePack/          <- git clone / unpacked repo")
+    print("        │   ├── __init__.py")
+    print("        │   └── requirements.txt   <- installed at boot into /opt/venv")
+    print("        └── AnotherNodePack/")
 
 
 def format_size(size_bytes):
@@ -150,4 +209,3 @@ def format_size(size_bytes):
             return f"{size_bytes:.1f} {unit}"
         size_bytes /= 1024
     return f"{size_bytes:.1f} TB"
-

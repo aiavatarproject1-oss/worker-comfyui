@@ -59,6 +59,83 @@ echo "worker-comfyui: GPU available — $GPU_CHECK"
 # Ensure ComfyUI-Manager runs in offline network mode inside the container
 comfy-manager-set-mode offline || echo "worker-comfyui - Could not set ComfyUI-Manager network_mode" >&2
 
+# ---------------------------------------------------------------------------
+# Network-volume custom nodes
+# Register /runpod-volume/custom_nodes via an overlay yaml only when present.
+# ComfyUI fails to start if custom_nodes is listed in yaml but the path is
+# missing, so we never bake that key into the default extra_model_paths.yaml.
+# Python deps are installed into /opt/venv with uv pip (not bare pip).
+# ---------------------------------------------------------------------------
+COMFY_EXTRA_ARGS=()
+VOLUME_CUSTOM_NODES="${NETWORK_VOLUME_CUSTOM_NODES_PATH:-/runpod-volume/custom_nodes}"
+STAGED_CUSTOM_NODES="/tmp/runpod_volume_custom_nodes"
+ENABLE_VOLUME_CUSTOM_NODES="${NETWORK_VOLUME_CUSTOM_NODES:-true}"
+SKIP_VOLUME_NODE_DEPS="${SKIP_VOLUME_NODE_DEPS:-false}"
+
+setup_volume_custom_nodes() {
+    if [ "${ENABLE_VOLUME_CUSTOM_NODES}" != "true" ]; then
+        echo "worker-comfyui: NETWORK_VOLUME_CUSTOM_NODES!=true — skipping volume custom nodes"
+        return 0
+    fi
+
+    if [ ! -d "${VOLUME_CUSTOM_NODES}" ]; then
+        echo "worker-comfyui: No custom nodes directory at ${VOLUME_CUSTOM_NODES} (skipping)"
+        return 0
+    fi
+
+    rm -rf "${STAGED_CUSTOM_NODES}"
+    mkdir -p "${STAGED_CUSTOM_NODES}"
+
+    local enabled=0
+    local skipped=0
+    shopt -s nullglob
+    for node_dir in "${VOLUME_CUSTOM_NODES}"/*/; do
+        local name
+        name="$(basename "${node_dir}")"
+
+        # Skip hidden / Manager metadata dirs
+        case "${name}" in
+            .*|__pycache__|websocket_image_save) continue ;;
+        esac
+
+        if [ -d "/comfyui/custom_nodes/${name}" ]; then
+            echo "worker-comfyui: skip volume custom node '${name}' (already baked into image)"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        ln -sfn "${node_dir%/}" "${STAGED_CUSTOM_NODES}/${name}"
+        enabled=$((enabled + 1))
+        echo "worker-comfyui: enabled volume custom node '${name}'"
+
+        if [ "${SKIP_VOLUME_NODE_DEPS}" = "true" ]; then
+            continue
+        fi
+
+        if [ -f "${node_dir}/requirements.txt" ]; then
+            echo "worker-comfyui: installing deps for volume custom node '${name}' into /opt/venv"
+            if ! uv pip install --no-cache-dir -r "${node_dir}/requirements.txt"; then
+                echo "worker-comfyui: WARNING — failed to install requirements for '${name}'" >&2
+            fi
+        fi
+    done
+    shopt -u nullglob
+
+    if [ "${enabled}" -eq 0 ]; then
+        echo "worker-comfyui: no volume custom nodes to load (enabled=0, skipped=${skipped})"
+        return 0
+    fi
+
+    cat > /tmp/extra_custom_nodes_paths.yaml <<EOF
+runpod_volume_custom_nodes:
+  custom_nodes: ${STAGED_CUSTOM_NODES}
+EOF
+    COMFY_EXTRA_ARGS+=(--extra-model-paths-config /tmp/extra_custom_nodes_paths.yaml)
+    echo "worker-comfyui: registered ${enabled} volume custom node(s) (skipped baked duplicates: ${skipped})"
+}
+
+setup_volume_custom_nodes
+
 echo "worker-comfyui: Starting ComfyUI"
 
 # Allow operators to tweak verbosity; default is DEBUG.
@@ -69,13 +146,13 @@ COMFY_PID_FILE="/tmp/comfyui.pid"
 
 # Serve the API and don't shutdown the container
 if [ "$SERVE_API_LOCALLY" == "true" ]; then
-    python -u /comfyui/main.py --disable-auto-launch --disable-metadata --listen --verbose "${COMFY_LOG_LEVEL}" --log-stdout &
+    python -u /comfyui/main.py --disable-auto-launch --disable-metadata --listen --verbose "${COMFY_LOG_LEVEL}" --log-stdout "${COMFY_EXTRA_ARGS[@]}" &
     echo $! > "$COMFY_PID_FILE"
 
     echo "worker-comfyui: Starting RunPod Handler"
     python -u /handler.py --rp_serve_api --rp_api_host=0.0.0.0
 else
-    python -u /comfyui/main.py --disable-auto-launch --disable-metadata --verbose "${COMFY_LOG_LEVEL}" --log-stdout &
+    python -u /comfyui/main.py --disable-auto-launch --disable-metadata --verbose "${COMFY_LOG_LEVEL}" --log-stdout "${COMFY_EXTRA_ARGS[@]}" &
     echo $! > "$COMFY_PID_FILE"
 
     echo "worker-comfyui: Starting RunPod Handler"

@@ -8,8 +8,9 @@
 - **No hot-reload**: handler.py, start.sh, and network_volume.py are `ADD`ed into the Docker image at build time (to `/`). Any change requires a full `docker build` before testing with docker-compose.
 - **Platform mismatch**: Always build with `--platform linux/amd64` for Runpod deployment. Omitting this on ARM hosts (Apple Silicon) produces images that silently fail on Runpod.
 - **No linter or formatter configured**: Follow PEP 8 by convention; there are no pre-commit hooks or CI lint checks.
-- **ComfyUI-Manager forced offline**: `start.sh` calls `comfy-manager-set-mode offline` on every boot. Custom nodes cannot be installed at runtime through the Manager UI — they must be baked into the Docker image.
-- **Network volume mount point**: Models on a network volume must match the directory structure in `src/extra_model_paths.yaml`. The volume is expected at `/runpod-volume` with a `comfyui/models/` subtree.
+- **ComfyUI-Manager forced offline**: `start.sh` calls `comfy-manager-set-mode offline` on every boot. Custom nodes cannot be installed at runtime through the Manager UI. Prefer baking critical nodes into the image; optionally load extra packs from `/runpod-volume/custom_nodes/` (registered at boot by `start.sh`).
+- **Network volume mount point**: Models live under `/runpod-volume/models/...` per `src/extra_model_paths.yaml`. Custom node packs live under `/runpod-volume/custom_nodes/<PackName>/`. Do not use a `comfyui/models/` subtree on the volume root.
+- **Volume custom nodes + missing path**: Never put a hard-coded `custom_nodes:` entry in the baked `extra_model_paths.yaml` for a path that may not exist — ComfyUI refuses to start. `start.sh` registers volume nodes only when the directory is present.
 
 ## Model type detection (for workflow parsing)
 

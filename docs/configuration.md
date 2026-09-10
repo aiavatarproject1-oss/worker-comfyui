@@ -16,6 +16,9 @@ This document outlines the environment variables available for configuring the `
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | `COMFY_LOG_LEVEL`      | Controls ComfyUI's internal logging verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Use `DEBUG` for troubleshooting, `INFO` for production. | `DEBUG` |
 | `NETWORK_VOLUME_DEBUG` | Enable detailed network volume diagnostics in worker logs. Useful for debugging model path issues. See [Network Volumes & Model Paths](network-volumes.md).      | `false` |
+| `NETWORK_VOLUME_CUSTOM_NODES` | When `true`, load custom node packs from `/runpod-volume/custom_nodes/` at boot (and install each pack's `requirements.txt` into `/opt/venv` via `uv pip`). Set `false` to disable. | `true` |
+| `SKIP_VOLUME_NODE_DEPS` | When `true`, still register volume custom nodes but skip boot-time `uv pip install -r requirements.txt` (faster cold start; deps must already be in the image). | `false` |
+| `NETWORK_VOLUME_CUSTOM_NODES_PATH` | Override the volume custom-nodes directory. | `/runpod-volume/custom_nodes` |
 
 ## Debugging Configuration
 

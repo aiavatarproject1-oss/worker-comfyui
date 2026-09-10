@@ -26,26 +26,50 @@ If you use the S3-compatible API, the same paths map as:
 
 ## Expected Directory Structure
 
-Models must be placed in the following structure on your network volume:
+Models and optional custom nodes must be placed in the following structure on your network volume:
 
 ```text
 /runpod-volume/
-└── models/
-    ├── checkpoints/      # Stable Diffusion checkpoints (.safetensors, .ckpt)
-    ├── loras/            # LoRA files (.safetensors, .pt)
-    ├── vae/              # VAE models (.safetensors, .pt)
-    ├── clip/             # CLIP models (.safetensors, .pt)
-    ├── clip_vision/      # CLIP Vision models
-    ├── controlnet/       # ControlNet models (.safetensors, .pt)
-    ├── embeddings/       # Textual inversion embeddings (.safetensors, .pt)
-    ├── upscale_models/   # Upscaling models (.safetensors, .pt)
-    ├── unet/             # UNet models
-    └── configs/          # Model configs (.yaml, .json)
+├── models/
+│   ├── checkpoints/      # Stable Diffusion checkpoints (.safetensors, .ckpt)
+│   ├── loras/            # LoRA files (.safetensors, .pt)
+│   ├── vae/              # VAE models (.safetensors, .pt)
+│   ├── clip/             # CLIP models (.safetensors, .pt)
+│   ├── clip_vision/      # CLIP Vision models
+│   ├── controlnet/       # ControlNet models (.safetensors, .pt)
+│   ├── embeddings/       # Textual inversion embeddings (.safetensors, .pt)
+│   ├── upscale_models/   # Upscaling models (.safetensors, .pt)
+│   ├── unet/             # UNet models (legacy path)
+│   ├── diffusion_models/ # UNETLoader / modern diffusion weights
+│   ├── text_encoders/    # CLIPLoader / DualCLIP / text encoders
+│   └── configs/          # Model configs (.yaml, .json)
+└── custom_nodes/         # Optional — loaded at worker boot
+    └── SomeNodePack/     # One git clone / unpacked package per folder
+        ├── __init__.py
+        └── requirements.txt
 ```
 
 > **Note**
 >
 > Only create the subdirectories you actually need; empty or missing folders are fine.
+
+## Custom nodes on the network volume
+
+On serverless boot, if `/runpod-volume/custom_nodes/` exists and `NETWORK_VOLUME_CUSTOM_NODES` is not `false`:
+
+1. Each immediate subfolder is treated as a ComfyUI custom-node package.
+2. Packages whose name already exists under `/comfyui/custom_nodes/` (baked into the image) are **skipped**.
+3. Remaining packages are registered via `--extra-model-paths-config` (so a missing volume path never blocks ComfyUI startup).
+4. Unless `SKIP_VOLUME_NODE_DEPS=true`, each package's `requirements.txt` is installed with `uv pip` into `/opt/venv`.
+
+From a Pod (volume mounted at `/workspace`), the same layout is:
+
+```text
+/workspace/custom_nodes/ComfyUI-KJNodes/
+/workspace/custom_nodes/ComfyUI-VideoHelperSuite/
+```
+
+**Caveats:** boot-time pip increases cold start; nodes that need system packages, CUDA compile, or tightly pinned stacks are safer baked into the Dockerfile. Never rely on ComfyUI-Manager at runtime — it is forced offline.
 
 ## Supported File Extensions
 
