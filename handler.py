@@ -20,6 +20,15 @@ from network_volume import (
     run_network_volume_diagnostics,
 )
 
+# RunOnRunpod plugin protocol (volume I/O + action jobs). Kept optional so
+# classic API clients that send only ``workflow`` (+ optional base64 images)
+# continue to use the original path below.
+try:
+    from model_fetcher import download_one, FetchError
+except ImportError:  # pragma: no cover - image always ships model_fetcher.py
+    download_one = None
+    FetchError = Exception
+
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
@@ -58,6 +67,14 @@ COMFY_HOST = "127.0.0.1:8188"
 # Enforce a clean state after each job is done
 # see https://docs.runpod.io/docs/handler-additional-controls#refresh-worker
 REFRESH_WORKER = os.environ.get("REFRESH_WORKER", "false").lower() == "true"
+
+# Network-volume layout used by the ComfyUI-RunOnRunpod plugin.
+# Classic API jobs do not touch these paths.
+VOLUME_DIR = "/runpod-volume"
+VOLUME_INPUTS_DIR = os.path.join(VOLUME_DIR, "inputs")
+VOLUME_OUTPUTS_DIR = os.path.join(VOLUME_DIR, "outputs")
+COMFY_INPUT_DIR = "/comfyui/input"
+COMFY_OUTPUT_DIR = os.environ.get("COMFY_OUTPUT_PATH", "/comfyui/output")
 
 # ---------------------------------------------------------------------------
 # Helper: quick reachability probe of ComfyUI HTTP endpoint (port 8188)
@@ -569,9 +586,238 @@ def get_image_data(filename, subfolder, image_type):
         return None
 
 
+def wait_for_comfy(timeout: int = 300) -> bool:
+    """Poll ComfyUI until /object_info answers (used by ``action=version``)."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            resp = requests.get(f"http://{COMFY_HOST}/object_info", timeout=5)
+            if resp.ok:
+                return True
+        except requests.RequestException:
+            pass
+        time.sleep(1)
+    return False
+
+
+def get_node_list() -> list:
+    """Return available ComfyUI node class types for plugin compatibility checks."""
+    resp = requests.get(f"http://{COMFY_HOST}/object_info", timeout=60)
+    resp.raise_for_status()
+    return list(resp.json().keys())
+
+
+def copy_volume_inputs(input_files: dict) -> None:
+    """Copy plugin-uploaded inputs from the network volume into ComfyUI's input dir."""
+    import shutil
+
+    for filename, s3_key in input_files.items():
+        src = os.path.join(VOLUME_DIR, s3_key)
+        dest = os.path.join(COMFY_INPUT_DIR, filename)
+        os.makedirs(os.path.dirname(dest) or COMFY_INPUT_DIR, exist_ok=True)
+        print(f"worker-comfyui - Copying volume input: {src} -> {dest}")
+        shutil.copy2(src, dest)
+
+
+def poll_completion(prompt_id: str, timeout: int = 600) -> dict:
+    """Poll ComfyUI history until the prompt completes (volume / plugin path)."""
+    start = time.time()
+    while time.time() - start < timeout:
+        history = get_history(prompt_id)
+        if prompt_id in history:
+            entry = history[prompt_id]
+            status = entry.get("status", {})
+            if status.get("completed") or status.get("status_str") in ("success", "error"):
+                return entry
+        time.sleep(1)
+    raise TimeoutError(f"Workflow did not complete within {timeout}s")
+
+
+def collect_volume_outputs(history_entry: dict) -> list:
+    """Collect output file paths (images/video/audio) from a history entry."""
+    files = []
+    outputs = history_entry.get("outputs", {})
+    print(f"worker-comfyui - Volume path output nodes: {list(outputs.keys())}")
+    for _node_id, node_output in outputs.items():
+        for key in ("images", "gifs", "audio", "videos"):
+            for item in node_output.get(key, []):
+                subfolder = item.get("subfolder", "")
+                filename = item["filename"]
+                path = os.path.join(COMFY_OUTPUT_DIR, subfolder, filename)
+                if os.path.exists(path):
+                    files.append(path)
+                else:
+                    print(f"worker-comfyui - Output file not found: {path}")
+    return files
+
+
+def save_volume_outputs(output_files: list, job_prefix: str) -> list:
+    """Copy outputs onto ``/runpod-volume/outputs/<job_prefix>/`` for the plugin."""
+    import shutil
+
+    job_dir = os.path.join(VOLUME_OUTPUTS_DIR, job_prefix)
+    os.makedirs(job_dir, exist_ok=True)
+    saved = []
+    for file_path in output_files:
+        filename = os.path.basename(file_path)
+        dest = os.path.join(job_dir, filename)
+        print(f"worker-comfyui - Saving volume output: {file_path} -> {dest}")
+        shutil.copy2(file_path, dest)
+        saved.append(f"{job_prefix}/{filename}")
+    return saved
+
+
+def run_version_action() -> dict:
+    """Liveness + protocol manifest for the ComfyUI-RunOnRunpod plugin."""
+    ready = wait_for_comfy()
+    try:
+        protocol_version = int(os.environ.get("PROTOCOL_VERSION", "0"))
+    except ValueError:
+        protocol_version = 0
+    cuda_version = ""
+    pytorch_version = ""
+    try:
+        import torch
+
+        pytorch_version = torch.__version__
+        cuda_version = torch.version.cuda or ""
+    except Exception as e:
+        print(f"worker-comfyui - Could not introspect torch: {e}")
+    return {
+        "status": "ok" if ready else "comfy_not_ready",
+        "worker_version": os.environ.get("WORKER_VERSION", "unknown"),
+        "protocol_version": protocol_version,
+        "cuda_version": cuda_version,
+        "pytorch_version": pytorch_version,
+        "comfyui_version": os.environ.get("COMFYUI_VERSION", "unknown"),
+    }
+
+
+def run_fetch_models(job: dict, job_input: dict) -> dict:
+    """Download models onto the network volume for the RunOnRunpod plugin."""
+    if download_one is None:
+        return {"error": "model_fetcher not available in this image"}
+
+    downloads = job_input.get("downloads", []) or []
+    hf_token = job_input.get("hf_token") or None
+    civitai_key = job_input.get("civitai_key") or None
+    total = len(downloads)
+    results = []
+
+    runpod.serverless.progress_update(
+        job,
+        {"action": "fetch_models", "total": total, "current_index": 0, "results": []},
+    )
+
+    for idx, descriptor in enumerate(downloads):
+        filename = os.path.basename(descriptor.get("dest_path", ""))
+        runpod.serverless.progress_update(
+            job,
+            {
+                "action": "fetch_models",
+                "total": total,
+                "current_index": idx,
+                "current_filename": filename,
+                "current_status": "downloading",
+                "results": list(results),
+            },
+        )
+        try:
+            download_one(descriptor, hf_token=hf_token, civitai_key=civitai_key)
+            results.append({"filename": filename, "status": "done"})
+        except FetchError as e:
+            print(f"worker-comfyui - fetch_models: {filename} failed: {e}")
+            results.append({"filename": filename, "status": "failed", "error": str(e)})
+        except Exception as e:
+            print(f"worker-comfyui - fetch_models: {filename} unexpected error: {e}")
+            results.append({"filename": filename, "status": "failed", "error": str(e)})
+
+        runpod.serverless.progress_update(
+            job,
+            {
+                "action": "fetch_models",
+                "total": total,
+                "current_index": idx + 1,
+                "results": list(results),
+            },
+        )
+
+    return {"action": "fetch_models", "total": total, "results": results}
+
+
+def run_volume_workflow(job: dict, job_input: dict) -> dict:
+    """Run a workflow for the RunOnRunpod plugin using network-volume I/O.
+
+    Expected input shape (same as the plugin sends)::
+
+        {"workflow": {...}, "input_files": {"local.png": "inputs/<hash>.png"}}
+
+    Response shape::
+
+        {"status": "success", "output_count": N, "output_files": ["ts_id/file.mp4"]}
+    """
+    workflow = job_input.get("workflow")
+    if workflow is None:
+        return {"error": "Missing 'workflow' parameter"}
+
+    input_files = job_input.get("input_files") or {}
+    job_id = job.get("id", "unknown")
+    timestamp = time.strftime("%Y%m%d%H%M%S")
+    job_prefix = f"{timestamp}_{job_id}"
+
+    if not check_server(
+        f"http://{COMFY_HOST}/",
+        COMFY_API_AVAILABLE_MAX_RETRIES,
+        COMFY_API_AVAILABLE_INTERVAL_MS,
+    ):
+        return {
+            "error": f"ComfyUI server ({COMFY_HOST}) not reachable after multiple retries."
+        }
+
+    if input_files:
+        copy_volume_inputs(input_files)
+
+    print("worker-comfyui - Submitting volume-path workflow to ComfyUI...")
+    client_id = str(uuid.uuid4())
+    try:
+        queued = queue_workflow(workflow, client_id)
+        prompt_id = queued.get("prompt_id")
+        if not prompt_id:
+            return {"error": f"Missing prompt_id in queue response: {queued}"}
+    except Exception as e:
+        return {"error": f"Error queuing workflow: {e}"}
+
+    print(f"worker-comfyui - Volume-path prompt ID: {prompt_id}")
+    try:
+        result = poll_completion(prompt_id)
+    except Exception as e:
+        return {"error": str(e)}
+
+    status_data = result.get("status", {})
+    if status_data.get("status_str") == "error":
+        messages = status_data.get("messages", [])
+        error_msg = str(messages) if messages else "Workflow execution failed"
+        return {"error": error_msg}
+
+    output_files = collect_volume_outputs(result)
+    print(f"worker-comfyui - Found {len(output_files)} volume output file(s)")
+    saved_files = save_volume_outputs(output_files, job_prefix)
+    return {
+        "status": "success",
+        "output_count": len(saved_files),
+        "output_files": saved_files,
+    }
+
+
 def handler(job):
     """
     Handles a job using ComfyUI via websockets for status and image retrieval.
+
+    Dual protocol:
+      1. ``action`` in input → RunOnRunpod plugin control jobs
+         (version / node_list / fetch_models)
+      2. ``input_files`` key present → RunOnRunpod volume workflow path
+      3. otherwise → classic worker-comfyui API (workflow + optional base64 images)
 
     Args:
         job (dict): A dictionary containing job details and input parameters.
@@ -586,6 +832,39 @@ def handler(job):
         run_network_volume_diagnostics()
 
     job_input = job["input"]
+
+    # Parse stringified JSON inputs (same as validate_input) before dispatch.
+    if isinstance(job_input, str):
+        try:
+            job_input = json.loads(job_input)
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON format in input"}
+
+    if job_input is None:
+        return {"error": "Please provide input"}
+
+    # --- RunOnRunpod plugin actions (no workflow required) ---
+    action = job_input.get("action")
+    if action == "version":
+        return run_version_action()
+    if action == "node_list":
+        try:
+            return {"node_list": get_node_list()}
+        except Exception as e:
+            return {"error": f"Failed to fetch node list: {e}"}
+    if action == "fetch_models":
+        return run_fetch_models(job, job_input)
+
+    # --- RunOnRunpod volume workflow (plugin always sends input_files key) ---
+    if isinstance(job_input, dict) and "input_files" in job_input:
+        try:
+            return run_volume_workflow(job, job_input)
+        except Exception as e:
+            print(f"worker-comfyui - Volume workflow error: {e}")
+            print(traceback.format_exc())
+            return {"error": str(e)}
+
+    # --- Classic worker-comfyui path (unchanged) ---
     job_id = job["id"]
 
     # Make sure that the input is valid

@@ -109,8 +109,17 @@ WORKDIR /
 # Pin to the ABI-stable line compatible with torch 2.11+.
 RUN uv pip install runpod requests websocket-client "torchcodec>=0.12"
 
+# Wire protocol for the ComfyUI-RunOnRunpod plugin. Classic API clients ignore
+# these; the plugin requires PROTOCOL_VERSION to match its routes.py value.
+ARG WORKER_VERSION=0.1.0
+ENV WORKER_VERSION=${WORKER_VERSION}
+ARG PROTOCOL_VERSION=1
+ENV PROTOCOL_VERSION=${PROTOCOL_VERSION}
+# Expose the ComfyUI version ARG (declared above) to the running handler.
+ENV COMFYUI_VERSION=${COMFYUI_VERSION}
+
 # Add application code and scripts
-ADD src/start.sh src/network_volume.py handler.py test_input.json ./
+ADD src/start.sh src/network_volume.py handler.py model_fetcher.py test_input.json ./
 RUN chmod +x /start.sh
 
 # Add script to install custom nodes
