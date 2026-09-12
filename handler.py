@@ -619,8 +619,23 @@ def copy_volume_inputs(input_files: dict) -> None:
         shutil.copy2(src, dest)
 
 
-def poll_completion(prompt_id: str, timeout: int = 600) -> dict:
+def _workflow_poll_timeout() -> int:
+    """Seconds to wait for ComfyUI to finish a prompt (volume / plugin path).
+
+    Independent of the RunPod endpoint execution timeout. Default 1800s so
+    long video jobs are not killed by the old hard-coded 600s poll limit.
+    Override with env ``WORKFLOW_POLL_TIMEOUT``.
+    """
+    try:
+        return max(60, int(os.environ.get("WORKFLOW_POLL_TIMEOUT", "1800")))
+    except ValueError:
+        return 1800
+
+
+def poll_completion(prompt_id: str, timeout: int | None = None) -> dict:
     """Poll ComfyUI history until the prompt completes (volume / plugin path)."""
+    if timeout is None:
+        timeout = _workflow_poll_timeout()
     start = time.time()
     while time.time() - start < timeout:
         history = get_history(prompt_id)

@@ -115,6 +115,9 @@ ARG WORKER_VERSION=0.1.0
 ENV WORKER_VERSION=${WORKER_VERSION}
 ARG PROTOCOL_VERSION=1
 ENV PROTOCOL_VERSION=${PROTOCOL_VERSION}
+# How long the volume-path handler waits for ComfyUI to finish a prompt.
+# Must be ≤ the RunPod endpoint execution timeout (and leave headroom).
+ENV WORKFLOW_POLL_TIMEOUT=1800
 # Expose the ComfyUI version ARG (declared above) to the running handler.
 ENV COMFYUI_VERSION=${COMFYUI_VERSION}
 
