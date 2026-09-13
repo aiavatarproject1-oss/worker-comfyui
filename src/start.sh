@@ -136,16 +136,16 @@ EOF
 
 setup_volume_custom_nodes
 
-# MiniMaxH3 (and similar large video models) can hang forever at the first
-# sampler step under DynamicVRAM / ModelPatcherDynamic — ComfyUI sees
-# "First sampler step" then never advances and never errors (upstream
-# #15628 / #15566). On large-VRAM RunPod hosts (e.g. 96GB PRO 6000) we do
-# not need streaming weights; load models normally instead.
-# Override with COMFY_DISABLE_DYNAMIC_VRAM=false if you need DynamicVRAM.
+# MiniMaxH3 can hang forever at the first sampler step under DynamicVRAM
+# (upstream #15628 / #15566). Disable it, but do NOT pass --highvram:
+# with highvram every loaded model stays resident (H3 ~32GB + TE ~25GB +
+# VAEs) and sampling OOMs around ~89/95 GiB. Classic estimate-based
+# loading unloads idle models so peak fits. Override with
+# COMFY_DISABLE_DYNAMIC_VRAM=false to re-enable DynamicVRAM.
 : "${COMFY_DISABLE_DYNAMIC_VRAM:=true}"
 if [ "${COMFY_DISABLE_DYNAMIC_VRAM}" = "true" ]; then
-    COMFY_EXTRA_ARGS+=(--disable-dynamic-vram --highvram)
-    echo "worker-comfyui: DynamicVRAM disabled (--disable-dynamic-vram --highvram)"
+    COMFY_EXTRA_ARGS+=(--disable-dynamic-vram)
+    echo "worker-comfyui: DynamicVRAM disabled (--disable-dynamic-vram)"
 fi
 
 echo "worker-comfyui: Starting ComfyUI"
