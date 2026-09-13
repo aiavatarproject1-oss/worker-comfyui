@@ -1,12 +1,14 @@
-# Build argument for base image selection
-ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+# Build argument for base image selection.
+# CUDA 13.0 (not 13.3): toolkit 13.3 needs driver >= 610; 13.0 works on
+# driver >= 580, which covers older RunPod hosts that still advertise R580.
+ARG BASE_IMAGE=nvidia/cuda:13.0.3-cudnn-runtime-ubuntu24.04
 
 # Stage 1: Base image with common dependencies (no baked models)
 FROM ${BASE_IMAGE} AS base
 
 # Build arguments for this stage with sensible defaults for standalone builds
 ARG COMFYUI_VERSION=0.34.0
-ARG CUDA_VERSION_FOR_COMFY=12.8
+ARG CUDA_VERSION_FOR_COMFY=13.0
 ARG ENABLE_PYTORCH_UPGRADE=false
 ARG PYTORCH_INDEX_URL
 
@@ -50,7 +52,8 @@ ENV PATH="/opt/venv/bin:${PATH}"
 # Install comfy-cli + dependencies needed by it to install ComfyUI
 # comfy-cli is pinned: its install/torch-index behavior decides what lands in
 # the workspace venv, so an unpinned version makes builds non-reproducible.
-RUN uv pip install comfy-cli==1.13.0 pip setuptools wheel
+# 1.20.0+ is required for --cuda-version 13.0.
+RUN uv pip install comfy-cli==1.20.0 pip setuptools wheel
 
 # Install ComfyUI
 RUN if [ -n "${CUDA_VERSION_FOR_COMFY}" ]; then \
@@ -79,15 +82,13 @@ RUN if [ "$ENABLE_PYTORCH_UPGRADE" = "true" ]; then \
 # RUN downgrades within one layer, so the unwanted versions aren't left behind
 # bloating the image.
 #
-# torch is installed FIRST, pinned to +cu128 builds: ComfyUI's requirements.txt
-# declares a bare `torch`, and default PyPI serves CUDA 13 builds (torch's PyPI
-# wheels depend on nvidia-*-cu13 since 2.11) that require driver >= 580. Hosts
-# allowed in .runpod/hub.json advertise CUDA 12.8/12.9 (driver 570/575), where
-# a cu13 torch fails CUDA init at startup. cu128 builds run on driver >= 570,
-# i.e. every allowed host. Installing torch first satisfies the bare `torch`
-# requirement so the PyPI pass doesn't touch it.
+# torch is installed FIRST, pinned to +cu130 builds: ComfyUI's requirements.txt
+# declares a bare `torch`; installing from the cu130 index first satisfies that
+# requirement so the later PyPI pass does not replace it with a mismatched
+# wheel. cu130 + CUDA 13.0 base need host driver >= 580 (covers R580 and newer
+# hosts like RTX PRO 6000 / 5090 on R595).
 RUN uv pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
-      --index-url https://download.pytorch.org/whl/cu128 \
+      --index-url https://download.pytorch.org/whl/cu130 \
     && uv pip install -r /comfyui/requirements.txt \
     && for r in /comfyui/custom_nodes/*/requirements.txt; do \
          [ -f "$r" ] && uv pip install -r "$r" || true; \

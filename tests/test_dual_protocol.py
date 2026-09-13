@@ -61,7 +61,24 @@ class TestDualProtocolDispatch(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["protocol_version"], 1)
         self.assertEqual(result["worker_version"], "9.9.9")
+        self.assertEqual(result["received_input"], {"action": "version"})
         self.assertNotIn("error", result)
+
+    def test_version_action_echoes_full_received_input(self):
+        payload = {
+            "action": "version",
+            "workflow": {"1": {"class_type": "KSampler"}},
+            "extra": {"debug": True},
+        }
+        with patch.object(handler, "wait_for_comfy", return_value=True), patch.dict(
+            os.environ,
+            {"PROTOCOL_VERSION": "1", "WORKER_VERSION": "9.9.9", "COMFYUI_VERSION": "test"},
+            clear=False,
+        ):
+            result = handler.handler({"id": "j1", "input": payload})
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["received_input"], payload)
 
     def test_node_list_action(self):
         with patch.object(handler, "get_node_list", return_value=["KSampler", "VAELoader"]):

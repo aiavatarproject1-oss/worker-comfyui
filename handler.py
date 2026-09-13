@@ -682,8 +682,12 @@ def save_volume_outputs(output_files: list, job_prefix: str) -> list:
     return saved
 
 
-def run_version_action() -> dict:
-    """Liveness + protocol manifest for the ComfyUI-RunOnRunpod plugin."""
+def run_version_action(job_input: dict | None = None) -> dict:
+    """Liveness + protocol manifest for the ComfyUI-RunOnRunpod plugin.
+
+    Echoes ``received_input`` so local clients can confirm the exact payload
+    that arrived on the worker (before ``action=node_list``).
+    """
     ready = wait_for_comfy()
     try:
         protocol_version = int(os.environ.get("PROTOCOL_VERSION", "0"))
@@ -705,6 +709,7 @@ def run_version_action() -> dict:
         "cuda_version": cuda_version,
         "pytorch_version": pytorch_version,
         "comfyui_version": os.environ.get("COMFYUI_VERSION", "unknown"),
+        "received_input": job_input if job_input is not None else {},
     }
 
 
@@ -861,7 +866,7 @@ def handler(job):
     # --- RunOnRunpod plugin actions (no workflow required) ---
     action = job_input.get("action")
     if action == "version":
-        return run_version_action()
+        return run_version_action(job_input)
     if action == "node_list":
         try:
             return {"node_list": get_node_list()}
