@@ -12,5 +12,6 @@ runpod_worker_comfy:
   unet: models/unet/
   diffusion_models: models/diffusion_models/
   text_encoders: models/text_encoders/
+  text_cond: models/text_cond/
   # custom_nodes are registered at boot from /runpod-volume/custom_nodes
   # (see start.sh) so ComfyUI does not crash when that path is missing.
