@@ -11,7 +11,7 @@ variable "RELEASE_VERSION" {
 }
 
 variable "COMFYUI_VERSION" {
-  default = "0.34.0"
+  default = "0.36.0"
 }
 
 # Global defaults for CUDA 13.0 images (driver >= 580; not 13.3 which needs >= 610)
