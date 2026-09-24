@@ -95,6 +95,13 @@ RUN uv pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
        done \
     && uv pip install "transformers>=4.50.3,<5" "huggingface-hub<1.0"
 
+# SageAttention for PathchSageAttentionKJ (comfyui-kjnodes). The CUDA runtime
+# base has no nvcc, so install a prebuilt cu13 / cp312 Linux wheel instead of
+# building from source. Keep DynamicVRAM disabled (start.sh) — SA + DynamicVRAM
+# has known MiniMax H3 hangs.
+RUN uv pip install \
+      "https://github.com/snw35/sageattention-wheel/releases/download/cu12-2.2.0-cu13-2.2.0/sageattention-2.2.0%2Bcu13-cp312-cp312-linux_x86_64.whl"
+
 # Change working directory to ComfyUI
 WORKDIR /comfyui
 
